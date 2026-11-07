@@ -183,4 +183,61 @@ object StorageHelper {
 
         return Uri.parse(savedUri)
     }
+
+    private fun getPendingKeysPrefKey(folderUri: Uri): String {
+        return "pending_deleted_keys_" + folderUri.toString()
+    }
+
+    fun getPendingDeletedKeyIds(context: Context, folderUri: Uri): Set<String> {
+        val preferences = context.getSharedPreferences(
+            "securepgp_storage",
+            Context.MODE_PRIVATE,
+        )
+        val prefKey = getPendingKeysPrefKey(folderUri)
+        return preferences.getStringSet(prefKey, null)?.toSet() ?: emptySet()
+    }
+
+    fun addPendingDeletedKeyId(context: Context, folderUri: Uri, symmetricKeyId: String): Boolean {
+        if (symmetricKeyId.trim().isEmpty()) return false
+        val preferences = context.getSharedPreferences(
+            "securepgp_storage",
+            Context.MODE_PRIVATE,
+        )
+        val prefKey = getPendingKeysPrefKey(folderUri)
+        val currentSet = preferences.getStringSet(prefKey, null)?.toMutableSet() ?: mutableSetOf()
+        currentSet.add(symmetricKeyId.trim())
+
+        return preferences.edit()
+            .putStringSet(prefKey, currentSet)
+            .commit()
+    }
+
+    fun removePendingDeletedKeyId(context: Context, folderUri: Uri, symmetricKeyId: String): Boolean {
+        val preferences = context.getSharedPreferences(
+            "securepgp_storage",
+            Context.MODE_PRIVATE,
+        )
+        val prefKey = getPendingKeysPrefKey(folderUri)
+        val currentSet = preferences.getStringSet(prefKey, null)?.toMutableSet() ?: return true
+        currentSet.remove(symmetricKeyId.trim())
+
+        val editor = preferences.edit()
+        if (currentSet.isEmpty()) {
+            editor.remove(prefKey)
+        } else {
+            editor.putStringSet(prefKey, currentSet)
+        }
+        return editor.commit()
+    }
+
+    fun clearPendingDeletedKeyIds(context: Context, folderUri: Uri): Boolean {
+        val preferences = context.getSharedPreferences(
+            "securepgp_storage",
+            Context.MODE_PRIVATE,
+        )
+        val prefKey = getPendingKeysPrefKey(folderUri)
+        return preferences.edit()
+            .remove(prefKey)
+            .commit()
+    }
 }
