@@ -36,6 +36,7 @@ object ArchiveCrypto {
 
     const val SALT_BYTE_SIZE = 32
     const val NONCE_BYTE_SIZE = 12
+    const val EXCHANGE_NONCE_BYTE_SIZE = 16
     const val KEY_BYTE_SIZE = 32 // 256 bits
     const val GCM_TAG_BIT_LENGTH = 128
     const val GCM_TAG_BYTE_SIZE = 16
@@ -56,6 +57,12 @@ object ArchiveCrypto {
         val nonce = ByteArray(NONCE_BYTE_SIZE)
         secureRandom.nextBytes(nonce)
         return nonce
+    }
+
+    fun generateExchangeNonce(): ByteArray {
+        val exchangeNonce = ByteArray(EXCHANGE_NONCE_BYTE_SIZE)
+        secureRandom.nextBytes(exchangeNonce)
+        return exchangeNonce
     }
 
     fun generateDek(): ByteArray {

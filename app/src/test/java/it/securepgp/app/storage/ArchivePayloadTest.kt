@@ -1,5 +1,6 @@
 package it.securepgp.app.storage
 
+import it.securepgp.app.ui.screens.getCompletePersonalKeypairIds
 import java.nio.charset.StandardCharsets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -127,6 +128,132 @@ class ArchivePayloadTest {
     }
 
     @Test
+    fun testConsumedExchangeRecordRoundTrip() {
+        val dummyKeyHash = ByteArray(32) { (it + 1).toByte() }
+        val dummyNonceHash = ByteArray(32) { (it + 10).toByte() }
+
+        val record = ArchiveRecord.ConsumedExchangeRecord(dummyKeyHash, dummyNonceHash)
+        val payload = ArchivePayload(records = listOf(record))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(1, deserialized.records.size)
+        assertEquals(record, deserialized.records[0])
+    }
+
+    @Test
+    fun testContactKeyVersionRecordRoundTrip() {
+        val record = ArchiveRecord.ContactKeyVersionRecord("cnt_100", 3)
+        val payload = ArchivePayload(records = listOf(record))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(1, deserialized.records.size)
+        assertEquals(record, deserialized.records[0])
+    }
+
+    @Test
+    fun testUserIdentityRecordRoundTrip() {
+        val record = ArchiveRecord.UserIdentityRecord("usr_12345678_uuid")
+        val payload = ArchivePayload(records = listOf(record))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(1, deserialized.records.size)
+        assertEquals(record, deserialized.records[0])
+    }
+
+    @Test
+    fun testContactIdentityRecordRoundTrip() {
+        val record = ArchiveRecord.ContactIdentityRecord("cnt_100", "usr_87654321_uuid")
+        val payload = ArchivePayload(records = listOf(record))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(1, deserialized.records.size)
+        assertEquals(record, deserialized.records[0])
+    }
+
+    @Test
+    fun testContactKeyVerificationRecordRoundTrip() {
+        val v4Fp = ByteArray(20) { (it + 5).toByte() }
+        val v6Fp = ByteArray(32) { (it + 7).toByte() }
+
+        val recordV4 = ArchiveRecord.ContactKeyVerificationRecord("cnt_100", v4Fp, true)
+        val recordV6 = ArchiveRecord.ContactKeyVerificationRecord("cnt_200", v6Fp, false)
+
+        val payload = ArchivePayload(records = listOf(recordV4, recordV6))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(2, deserialized.records.size)
+        assertEquals(recordV4, deserialized.records[0])
+        assertEquals(recordV6, deserialized.records[1])
+    }
+
+    @Test
+    fun testConsumedExchangeRecordEqualsAndHashCode() {
+        val hashA1 = ByteArray(32) { 1 }
+        val hashA2 = ByteArray(32) { 1 }
+        val hashB = ByteArray(32) { 2 }
+
+        val rec1 = ArchiveRecord.ConsumedExchangeRecord(hashA1, hashB)
+        val rec2 = ArchiveRecord.ConsumedExchangeRecord(hashA2, hashB)
+
+        assertEquals(rec1, rec2)
+        assertEquals(rec1.hashCode(), rec2.hashCode())
+    }
+
+    @Test
+    fun testContactKeyVerificationRecordEqualsAndHashCode() {
+        val fp1 = ByteArray(20) { 5 }
+        val fp2 = ByteArray(20) { 5 }
+
+        val rec1 = ArchiveRecord.ContactKeyVerificationRecord("cnt_1", fp1, true)
+        val rec2 = ArchiveRecord.ContactKeyVerificationRecord("cnt_1", fp2, true)
+
+        assertEquals(rec1, rec2)
+        assertEquals(rec1.hashCode(), rec2.hashCode())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testContactKeyVerificationFingerprintValidationInvalidSize() {
+        val invalid25ByteFp = ByteArray(25)
+        ArchiveRecord.ContactKeyVerificationRecord("cnt_1", invalid25ByteFp, true)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testConsumedExchangeHashValidationInvalidSize() {
+        val invalid31ByteHash = ByteArray(31)
+        val valid32ByteHash = ByteArray(32)
+        ArchiveRecord.ConsumedExchangeRecord(invalid31ByteHash, valid32ByteHash)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testContactKeyVersionNegativeRejection() {
+        ArchiveRecord.ContactKeyVersionRecord("cnt_1", -1)
+    }
+
+    @Test
+    fun testPhase2RecordsAllTogetherRoundTrip() {
+        val hash32A = ByteArray(32) { 10 }
+        val hash32B = ByteArray(32) { 20 }
+        val fp20 = ByteArray(20) { 30 }
+
+        val consumed = ArchiveRecord.ConsumedExchangeRecord(hash32A, hash32B)
+        val keyVersion = ArchiveRecord.ContactKeyVersionRecord("cnt_999", 2)
+        val userId = ArchiveRecord.UserIdentityRecord("usr_owner_uuid")
+        val contactId = ArchiveRecord.ContactIdentityRecord("cnt_999", "usr_remote_uuid")
+        val keyVerification = ArchiveRecord.ContactKeyVerificationRecord("cnt_999", fp20, true)
+
+        val payload = ArchivePayload(records = listOf(consumed, keyVersion, userId, contactId, keyVerification))
+        val deserialized = ArchivePayload.deserialize(payload.serialize())
+
+        assertEquals(5, deserialized.records.size)
+        assertEquals(5, deserialized.records.size)
+        assertEquals(consumed, deserialized.records[0])
+        assertEquals(keyVersion, deserialized.records[1])
+        assertEquals(userId, deserialized.records[2])
+        assertEquals(contactId, deserialized.records[3])
+        assertEquals(keyVerification, deserialized.records[4])
+    }
+
+    @Test
     fun testKeyNameUpdateWithoutDuplicates() {
         val keyId = "0xFF402940965C3F7D"
         val initialNameRecord = ArchiveRecord.KeyNameRecord(keyId, "Vecchio Nome")
@@ -181,6 +308,42 @@ class ArchivePayloadTest {
         assertTrue(hasPub)
         assertEquals("Identità Personale", foundName)
         assertEquals("Lavoro", foundCat)
+    }
+
+    @Test
+    fun testCompletePersonalKeypairSelectorFiltering() {
+        val dummyBytes = "DUMMY_KEY_BYTES".toByteArray(StandardCharsets.UTF_8)
+
+        // Complete keypair 1
+        val priv1 = ArchiveRecord.PrivateKeyRecord("0xKEY001", dummyBytes)
+        val pub1 = ArchiveRecord.PublicKeyRecord("0xKEY001", dummyBytes)
+
+        // Complete keypair 2
+        val priv2 = ArchiveRecord.PrivateKeyRecord("0xKEY002", dummyBytes)
+        val pub2 = ArchiveRecord.PublicKeyRecord("0xKEY002", dummyBytes)
+
+        // Private-only key (must be excluded)
+        val privOnly = ArchiveRecord.PrivateKeyRecord("0xPRIV_ONLY", dummyBytes)
+
+        // Public-only key (must be excluded)
+        val pubOnly = ArchiveRecord.PublicKeyRecord("0xPUB_ONLY", dummyBytes)
+
+        // Contact Public Key (must be excluded)
+        val contactPubKey = ArchiveRecord.ContactPublicKeyRecord("cnt_100", "0xCONTACT_PUB", dummyBytes)
+
+        val records = listOf(priv1, pub1, priv2, pub2, privOnly, pubOnly, contactPubKey)
+
+        val result = getCompletePersonalKeypairIds(records)
+
+        // Verify exactly 2 complete keypairs are returned
+        assertEquals(2, result.size)
+        assertTrue(result.contains("0xKEY001"))
+        assertTrue(result.contains("0xKEY002"))
+
+        // Verify incomplete or contact keys are excluded
+        assertTrue(!result.contains("0xPRIV_ONLY"))
+        assertTrue(!result.contains("0xPUB_ONLY"))
+        assertTrue(!result.contains("0xCONTACT_PUB"))
     }
 
     @Test(expected = IllegalArgumentException::class)

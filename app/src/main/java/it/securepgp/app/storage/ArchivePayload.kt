@@ -122,6 +122,80 @@ sealed class ArchiveRecord(val typeId: Byte) {
         val name: String,
     ) : ArchiveRecord(TYPE_KEY_NAME)
 
+    data class ConsumedExchangeRecord(
+        val symmetricKeyIdHash: ByteArray,
+        val exchangeNonceHash: ByteArray,
+    ) : ArchiveRecord(TYPE_CONSUMED_EXCHANGE) {
+        init {
+            require(symmetricKeyIdHash.size == 32) {
+                "SymmetricKeyIdHash must be exactly 32 bytes (SHA-256), got ${symmetricKeyIdHash.size} bytes."
+            }
+            require(exchangeNonceHash.size == 32) {
+                "ExchangeNonceHash must be exactly 32 bytes (SHA-256), got ${exchangeNonceHash.size} bytes."
+            }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ConsumedExchangeRecord) return false
+            if (!symmetricKeyIdHash.contentEquals(other.symmetricKeyIdHash)) return false
+            return exchangeNonceHash.contentEquals(other.exchangeNonceHash)
+        }
+
+        override fun hashCode(): Int {
+            var result = symmetricKeyIdHash.contentHashCode()
+            result = (31 * result) + exchangeNonceHash.contentHashCode()
+            return result
+        }
+    }
+
+    data class ContactKeyVersionRecord(
+        val contactId: String,
+        val agreedVersion: Int,
+    ) : ArchiveRecord(TYPE_CONTACT_KEY_VERSION) {
+        init {
+            require(agreedVersion >= 0) {
+                "AgreedVersion cannot be negative, got $agreedVersion."
+            }
+        }
+    }
+
+    data class UserIdentityRecord(
+        val userIdentityId: String,
+    ) : ArchiveRecord(TYPE_USER_IDENTITY)
+
+    data class ContactIdentityRecord(
+        val contactId: String,
+        val userIdentityId: String,
+    ) : ArchiveRecord(TYPE_CONTACT_IDENTITY)
+
+    data class ContactKeyVerificationRecord(
+        val contactId: String,
+        val pgpFingerprint: ByteArray,
+        val isVerified: Boolean,
+    ) : ArchiveRecord(TYPE_CONTACT_KEY_VERIFICATION) {
+        init {
+            require(pgpFingerprint.size == 20 || pgpFingerprint.size == 32) {
+                "OpenPGP fingerprint must be 20 bytes (v4) or 32 bytes (v6), got ${pgpFingerprint.size} bytes."
+            }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ContactKeyVerificationRecord) return false
+            if (contactId != other.contactId) return false
+            if (isVerified != other.isVerified) return false
+            return pgpFingerprint.contentEquals(other.pgpFingerprint)
+        }
+
+        override fun hashCode(): Int {
+            var result = contactId.hashCode()
+            result = (31 * result) + isVerified.hashCode()
+            result = (31 * result) + pgpFingerprint.contentHashCode()
+            return result
+        }
+    }
+
     companion object {
         const val TYPE_PRIVATE_KEY: Byte = 0x01
         const val TYPE_PUBLIC_KEY: Byte = 0x02
@@ -132,6 +206,11 @@ sealed class ArchiveRecord(val typeId: Byte) {
         const val TYPE_KEY_CATEGORY: Byte = 0x08
         const val TYPE_CONTACT_OWNER_KEY: Byte = 0x09
         const val TYPE_KEY_NAME: Byte = 0x0A
+        const val TYPE_CONSUMED_EXCHANGE: Byte = 0x0B
+        const val TYPE_CONTACT_KEY_VERSION: Byte = 0x0C
+        const val TYPE_USER_IDENTITY: Byte = 0x0D
+        const val TYPE_CONTACT_IDENTITY: Byte = 0x0E
+        const val TYPE_CONTACT_KEY_VERIFICATION: Byte = 0x0F
     }
 }
 
@@ -242,6 +321,46 @@ data class ArchivePayload(
                     data.write(keyIdBytes)
                     data.writeByte(nameBytes.size)
                     data.write(nameBytes)
+                }
+                is ArchiveRecord.ConsumedExchangeRecord -> {
+                    require(record.symmetricKeyIdHash.size == 32) { "SymmetricKeyIdHash must be 32 bytes." }
+                    require(record.exchangeNonceHash.size == 32) { "ExchangeNonceHash must be 32 bytes." }
+                    data.write(record.symmetricKeyIdHash)
+                    data.write(record.exchangeNonceHash)
+                }
+                is ArchiveRecord.ContactKeyVersionRecord -> {
+                    val contactIdBytes = record.contactId.toByteArray(StandardCharsets.UTF_8)
+                    require(contactIdBytes.size <= 255) { "ContactId string too long." }
+                    require(record.agreedVersion >= 0) { "AgreedVersion cannot be negative." }
+                    data.writeByte(contactIdBytes.size)
+                    data.write(contactIdBytes)
+                    data.writeInt(record.agreedVersion)
+                }
+                is ArchiveRecord.UserIdentityRecord -> {
+                    val userIdBytes = record.userIdentityId.toByteArray(StandardCharsets.UTF_8)
+                    require(userIdBytes.size <= 255) { "UserIdentityId string too long." }
+                    data.writeByte(userIdBytes.size)
+                    data.write(userIdBytes)
+                }
+                is ArchiveRecord.ContactIdentityRecord -> {
+                    val contactIdBytes = record.contactId.toByteArray(StandardCharsets.UTF_8)
+                    val userIdBytes = record.userIdentityId.toByteArray(StandardCharsets.UTF_8)
+                    require(contactIdBytes.size <= 255) { "ContactId string too long." }
+                    require(userIdBytes.size <= 255) { "UserIdentityId string too long." }
+                    data.writeByte(contactIdBytes.size)
+                    data.write(contactIdBytes)
+                    data.writeByte(userIdBytes.size)
+                    data.write(userIdBytes)
+                }
+                is ArchiveRecord.ContactKeyVerificationRecord -> {
+                    val contactIdBytes = record.contactId.toByteArray(StandardCharsets.UTF_8)
+                    require(contactIdBytes.size <= 255) { "ContactId string too long." }
+                    require(record.pgpFingerprint.size == 20 || record.pgpFingerprint.size == 32) { "Fingerprint must be 20 or 32 bytes." }
+                    data.writeByte(contactIdBytes.size)
+                    data.write(contactIdBytes)
+                    data.writeByte(record.pgpFingerprint.size)
+                    data.write(record.pgpFingerprint)
+                    data.writeByte(if (record.isVerified) 1 else 0)
                 }
             }
         }
@@ -412,6 +531,66 @@ data class ArchivePayload(
                             val name = String(nameBytes, StandardCharsets.UTF_8)
 
                             records.add(ArchiveRecord.KeyNameRecord(keyId, name))
+                        }
+                        ArchiveRecord.TYPE_CONSUMED_EXCHANGE -> {
+                            val keyIdHash = ByteArray(32)
+                            data.readFully(keyIdHash)
+                            val nonceHash = ByteArray(32)
+                            data.readFully(nonceHash)
+
+                            records.add(ArchiveRecord.ConsumedExchangeRecord(keyIdHash, nonceHash))
+                        }
+                        ArchiveRecord.TYPE_CONTACT_KEY_VERSION -> {
+                            val contactIdLen = data.readUnsignedByte()
+                            val contactIdBytes = ByteArray(contactIdLen)
+                            data.readFully(contactIdBytes)
+                            val contactId = String(contactIdBytes, StandardCharsets.UTF_8)
+
+                            val agreedVersion = data.readInt()
+                            if (agreedVersion < 0) {
+                                throw InvalidArchiveFormatException("Invalid agreed version ($agreedVersion).")
+                            }
+
+                            records.add(ArchiveRecord.ContactKeyVersionRecord(contactId, agreedVersion))
+                        }
+                        ArchiveRecord.TYPE_USER_IDENTITY -> {
+                            val userIdLen = data.readUnsignedByte()
+                            val userIdBytes = ByteArray(userIdLen)
+                            data.readFully(userIdBytes)
+                            val userIdentityId = String(userIdBytes, StandardCharsets.UTF_8)
+
+                            records.add(ArchiveRecord.UserIdentityRecord(userIdentityId))
+                        }
+                        ArchiveRecord.TYPE_CONTACT_IDENTITY -> {
+                            val contactIdLen = data.readUnsignedByte()
+                            val contactIdBytes = ByteArray(contactIdLen)
+                            data.readFully(contactIdBytes)
+                            val contactId = String(contactIdBytes, StandardCharsets.UTF_8)
+
+                            val userIdLen = data.readUnsignedByte()
+                            val userIdBytes = ByteArray(userIdLen)
+                            data.readFully(userIdBytes)
+                            val userIdentityId = String(userIdBytes, StandardCharsets.UTF_8)
+
+                            records.add(ArchiveRecord.ContactIdentityRecord(contactId, userIdentityId))
+                        }
+                        ArchiveRecord.TYPE_CONTACT_KEY_VERIFICATION -> {
+                            val contactIdLen = data.readUnsignedByte()
+                            val contactIdBytes = ByteArray(contactIdLen)
+                            data.readFully(contactIdBytes)
+                            val contactId = String(contactIdBytes, StandardCharsets.UTF_8)
+
+                            val fpLen = data.readUnsignedByte()
+                            if (fpLen != 20 && fpLen != 32) {
+                                throw InvalidArchiveFormatException("Invalid fingerprint length ($fpLen).")
+                            }
+                            val pgpFingerprint = ByteArray(fpLen)
+                            data.readFully(pgpFingerprint)
+
+                            val isVerifiedByte = data.readByte()
+                            val isVerified = (isVerifiedByte != 0.toByte())
+
+                            records.add(ArchiveRecord.ContactKeyVerificationRecord(contactId, pgpFingerprint, isVerified))
                         }
                         else -> {
                             throw InvalidArchiveFormatException("Unknown payload record type ID $typeId.")

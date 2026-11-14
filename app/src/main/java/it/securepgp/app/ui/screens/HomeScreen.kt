@@ -3,6 +3,7 @@ package it.securepgp.app.ui.screens
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,6 +25,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -79,7 +82,24 @@ private enum class NewRecordType {
     METADATA
 }
 
+private enum class HomeNavigationTab {
+    MY_KEYS,
+    CONTACTS,
+}
+
 private val PREDEFINED_CATEGORIES = listOf("Amici", "Parenti", "Colleghi", "Lavoro", "Personale", "Altro")
+
+fun getCompletePersonalKeypairIds(records: List<ArchiveRecord>): List<String> {
+    val privateKeyIds = records.filterIsInstance<ArchiveRecord.PrivateKeyRecord>()
+        .map { it.keyId }
+        .toSet()
+
+    val publicKeyIds = records.filterIsInstance<ArchiveRecord.PublicKeyRecord>()
+        .map { it.keyId }
+        .toSet()
+
+    return privateKeyIds.intersect(publicKeyIds).toList()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,6 +115,10 @@ fun HomeScreen() {
     var loadedPayload by remember { mutableStateOf<ArchivePayload?>(null) }
     var hasUnsavedChanges by remember { mutableStateOf(false) }
     var isOperating by remember { mutableStateOf(false) }
+
+    // Navigation State
+    var activeTab by remember { mutableStateOf(HomeNavigationTab.MY_KEYS) }
+    var selectedContactDetail by remember { mutableStateOf<ArchiveRecord.ContactRecord?>(null) }
 
     // Dialog state for Passphrase
     var pendingDialogAction by remember { mutableStateOf<PendingArchiveDialogAction?>(null) }
@@ -421,6 +445,7 @@ fun HomeScreen() {
                 }
                 archiveStatusMessage = ""
                 loadedPayload = null
+                selectedContactDetail = null
                 hasUnsavedChanges = false
             }
         } else {
@@ -907,17 +932,7 @@ fun HomeScreen() {
     // Dialog for Assigning Personal Keypair to a Contact
     if (contactForOwnerKeyAssignment != null) {
         val targetContact = contactForOwnerKeyAssignment!!
-        val availablePersonalKeyIds = loadedPayload?.records
-            ?.filter { it is ArchiveRecord.PrivateKeyRecord || it is ArchiveRecord.PublicKeyRecord }
-            ?.map {
-                when (it) {
-                    is ArchiveRecord.PrivateKeyRecord -> it.keyId
-                    is ArchiveRecord.PublicKeyRecord -> it.keyId
-                    else -> ""
-                }
-            }
-            ?.filter { it.isNotEmpty() }
-            ?.distinct() ?: emptyList()
+        val availablePersonalKeyIds = loadedPayload?.records?.let { getCompletePersonalKeypairIds(it) } ?: emptyList()
 
         AlertDialog(
             onDismissRequest = {
@@ -929,7 +944,7 @@ fun HomeScreen() {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (availablePersonalKeyIds.isEmpty()) {
                         Text(
-                            text = "Nessuna chiave PGP personale trovata nell'archivio.\nImporta o crea prima una chiave personale.",
+                            text = "Nessuna chiave PGP personale completa (privata + pubblica) trovata nell'archivio.\nImporta o crea prima una chiave personale completa.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -1196,6 +1211,7 @@ fun HomeScreen() {
                         }
                         archiveStatusMessage = ""
                         loadedPayload = null
+                        selectedContactDetail = null
                         hasUnsavedChanges = false
                     },
                 ) {
@@ -1363,13 +1379,15 @@ fun HomeScreen() {
                                             archiveStatusMessage = when (saveRes) {
                                                 is RepositorySaveResult.Success -> {
                                                     loadedPayload = ArchivePayload(records = initialRecords)
+                                                    selectedContactDetail = null
                                                     hasUnsavedChanges = false
                                                     "Archivio creato con successo! (Generazione g${saveRes.generationIndex})"
                                                 }
                                                 is RepositorySaveResult.VerifiedNotPromoted -> {
                                                     loadedPayload = ArchivePayload(records = initialRecords)
-                                                    hasUnsavedChanges = false
-                                                    "Archivio creato e verificato, ma la rinomina SAF non è supportata dal dispositivo. (File temporaneo conservato: g${saveRes.generationIndex})"
+                                                    selectedContactDetail = null
+                                                    hasUnsavedChanges = true
+                                                    "⚠️ ERRORE SALVATAGGIO: Il provider SAF di questa cartella non supporta la rinomina dei file. L'archivio g${saveRes.generationIndex} non potrà essere ricaricato alla riapertura dell'app. Seleziona un'altra cartella o memoria."
                                                 }
                                                 is RepositorySaveResult.Error -> "Errore durante la creazione: ${saveRes.message}"
                                             }
@@ -1388,6 +1406,7 @@ fun HomeScreen() {
                                                 is RepositoryLoadResult.Success -> {
                                                     val (adjustedPayload, modified) = processPendingKeyDeletions(loadRes.payload, targetUri)
                                                     loadedPayload = adjustedPayload
+                                                    selectedContactDetail = null
                                                     if (modified) {
                                                         hasUnsavedChanges = true
                                                         "Archivio aperto: applicata la rimozione pendente della chiave simmetrica. Salva l'archivio per completare la pulizia SAF."
@@ -1400,21 +1419,25 @@ fun HomeScreen() {
                                                 }
                                                 is RepositoryLoadResult.NoArchiveFound -> {
                                                     loadedPayload = null
+                                                    selectedContactDetail = null
                                                     hasUnsavedChanges = false
                                                     "Nessun archivio cifrato trovato nella cartella selezionata."
                                                 }
                                                 is RepositoryLoadResult.AuthenticationFailed -> {
                                                     loadedPayload = null
+                                                    selectedContactDetail = null
                                                     hasUnsavedChanges = false
                                                     "Passphrase errata o archivio alterato/manomesso."
                                                 }
                                                 is RepositoryLoadResult.CorruptedArchive -> {
                                                     loadedPayload = null
+                                                    selectedContactDetail = null
                                                     hasUnsavedChanges = false
                                                     "Archivio danneggiato o malformato: ${loadRes.message}"
                                                 }
                                                 is RepositoryLoadResult.Error -> {
                                                     loadedPayload = null
+                                                    selectedContactDetail = null
                                                     hasUnsavedChanges = false
                                                     "Errore di lettura storage SAF: ${loadRes.message}"
                                                 }
@@ -1460,8 +1483,8 @@ fun HomeScreen() {
                                                     }
                                                 }
                                                 is RepositorySaveResult.VerifiedNotPromoted -> {
-                                                    hasUnsavedChanges = false
-                                                    archiveStatusMessage = "Archivio salvato e verificato (g${saveRes.generationIndex}), ma la rinomina SAF non è supportata dal dispositivo. Pulizia vecchie generazioni sospesa."
+                                                    hasUnsavedChanges = true
+                                                    archiveStatusMessage = "⚠️ ERRORE SALVATAGGIO: Il provider SAF di questa cartella non supporta la rinomina dei file. Le modifiche pendenti rimangono in memoria ma NON saranno recuperabili alla riapertura dell'app (g${saveRes.generationIndex}). Seleziona un'altra cartella o memoria."
                                                 }
                                                 is RepositorySaveResult.Error -> {
                                                     archiveStatusMessage = "Errore durante il salvataggio: ${saveRes.message}"
@@ -1682,6 +1705,7 @@ fun HomeScreen() {
                 Button(
                     onClick = {
                         loadedPayload = null
+                        selectedContactDetail = null
                         hasUnsavedChanges = false
                         archiveStatusMessage = "Archivio chiuso (modifiche non salvate scartate)."
                         showCloseConfirmationDialog = false
@@ -1744,13 +1768,7 @@ fun HomeScreen() {
                 description = "Sezione pianificata per cifrare e decifrare messaggi e file. La logica di protezione sarà implementata nelle prossime fasi.",
             )
 
-            // Sezione 2: Chiavi OpenPGP
-            SectionCard(
-                title = "Chiavi OpenPGP",
-                description = "Sezione pianificata per la generazione, l'importazione e l'organizzazione delle chiavi pubbliche e private.",
-            )
-
-            // Sezione 3: Archivio su scheda SD
+            // Sezione 2: Archivio su scheda SD (Intestazione globale controlli)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -1769,7 +1787,7 @@ fun HomeScreen() {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Sezione per la gestione e il salvataggio dell'archivio cifrato su memoria esterna rimovibile.",
+                        text = "Gestione del salvataggio dell'archivio cifrato su memoria esterna rimovibile.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                     )
@@ -1883,185 +1901,607 @@ fun HomeScreen() {
                             fontWeight = FontWeight.Medium,
                         )
                     }
+                }
+            }
 
-                    // Sezione Visiva: Contatti salvati nell'archivio
-                    if (loadedPayload != null) {
-                        val payload = loadedPayload!!
-                        val contactRecords = payload.records.filterIsInstance<ArchiveRecord.ContactRecord>()
+            // CONTENUTO DELL'ARCHIVIO APERTO
+            if (loadedPayload != null) {
+                val payload = loadedPayload!!
+                val contactRecords = payload.records.filterIsInstance<ArchiveRecord.ContactRecord>()
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                val personalKeyIds = payload.records.filter {
+                    it is ArchiveRecord.PrivateKeyRecord || it is ArchiveRecord.PublicKeyRecord
+                }.map {
+                    when (it) {
+                        is ArchiveRecord.PrivateKeyRecord -> it.keyId
+                        is ArchiveRecord.PublicKeyRecord -> it.keyId
+                        else -> ""
+                    }
+                }.filter { it.isNotEmpty() }.distinct()
 
+                // SCHERMATA DETTAGLIO CONTATTO (Se un contatto è selezionato)
+                if (selectedContactDetail != null) {
+                    val contact = selectedContactDetail!!
+                    val associatedOwnerKeyRecord = payload.records.filterIsInstance<ArchiveRecord.ContactOwnerKeyRecord>()
+                        .firstOrNull { it.contactId == contact.contactId }
+                    val associatedPubKey = payload.records.filterIsInstance<ArchiveRecord.ContactPublicKeyRecord>()
+                        .firstOrNull { it.contactId == contact.contactId }
+                    val associatedSymKey = payload.records.filterIsInstance<ArchiveRecord.ContactSymmetricKeyRecord>()
+                        .firstOrNull { it.contactId == contact.contactId }
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f),
+                        ),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            // Pulsante Indietro + Titolo Contatto
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                TextButton(
+                                    onClick = { selectedContactDetail = null },
+                                    enabled = !isOperating,
+                                ) {
+                                    Text("← Torna ai Contatti")
+                                }
+
+                                Text(
+                                    text = "👤 ${contact.alias}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+
+                            Text(
+                                text = "Contact ID: ${contact.contactId}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+
+                            // SEZIONE A: LA MIA CHIAVE PERSONALE PER QUESTO CONTATTO
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "A. La Mia Chiave Personale per questo Contatto",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(
+                                        text = "Seleziona la tua coppia di chiavi PGP personale da utilizzare per firmare ed identificarti verso questo contatto.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    if (associatedOwnerKeyRecord != null) {
+                                        val ownerKeyName = payload.records.filterIsInstance<ArchiveRecord.KeyNameRecord>()
+                                            .firstOrNull { it.keyId == associatedOwnerKeyRecord.ownerKeyId }?.name
+                                        val ownerCategory = payload.records.filterIsInstance<ArchiveRecord.KeyCategoryRecord>()
+                                            .firstOrNull { it.keyId == associatedOwnerKeyRecord.ownerKeyId }?.category ?: "Personale"
+
+                                        val ownerLabel = if (ownerKeyName != null) {
+                                            "$ownerKeyName (${associatedOwnerKeyRecord.ownerKeyId})"
+                                        } else {
+                                            associatedOwnerKeyRecord.ownerKeyId
+                                        }
+
+                                        Text(
+                                            text = "🔒 Chiave Personale: $ownerLabel",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                        )
+                                        Text(
+                                            text = "🏷️ Categoria: $ownerCategory",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "🔒 Nessuna chiave personale associata.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            val availableKeyIds = getCompletePersonalKeypairIds(payload.records)
+                                            contactForOwnerKeyAssignment = contact
+                                            selectedOwnerKeyIdOption = associatedOwnerKeyRecord?.ownerKeyId ?: availableKeyIds.firstOrNull()
+                                        },
+                                        enabled = !isOperating,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(if (associatedOwnerKeyRecord == null) "Associa chiave personale" else "Cambia chiave personale")
+                                    }
+                                }
+                            }
+
+                            // SEZIONE B: CHIAVE PUBBLICA DEL CONTATTO
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "B. Chiave Pubblica del Contatto",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(
+                                        text = "Chiave pubblica OpenPGP appartenente a questo contatto per la cifratura asimmetrica.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    if (associatedPubKey != null) {
+                                        val parsedInfo = PgpKeyParser.parseKeyData(associatedPubKey.keyData)
+                                        val fpHex = if (parsedInfo is ParsedPgpKeyResult.PublicKeyResult) parsedInfo.fingerprintHex else "N/A"
+
+                                        Text(
+                                            text = "🔑 Key ID: ${associatedPubKey.keyId}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        Text(
+                                            text = "Fingerprint: $fpHex",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "Nessuna chiave pubblica del contatto importata.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                        Button(
+                                            onClick = {
+                                                contactForPublicKeyImport = contact
+                                                openContactPgpDocumentLauncher.launch(
+                                                    arrayOf(
+                                                        "application/pgp-keys",
+                                                        "application/pgp-signature",
+                                                        "application/pgp-encrypted",
+                                                        "text/plain",
+                                                        "application/octet-stream",
+                                                        "*/*",
+                                                    ),
+                                                )
+                                            },
+                                            enabled = !isOperating,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Importa chiave pubblica del contatto")
+                                        }
+                                    }
+                                }
+                            }
+
+                            // SEZIONE C: CHIAVE SIMMETRICA CONDIVISA
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "C. Chiave Simmetrica Condivisa",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(
+                                        text = "Chiave simmetrica AES-256 condivisa con questo contatto per comunicazioni cifrate ad alta velocità.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    if (associatedSymKey != null) {
+                                        Text(
+                                            text = "⚡ Key ID: ${associatedSymKey.symmetricKeyId}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.tertiary,
+                                        )
+                                        Text(
+                                            text = "Versione: v${associatedSymKey.keyVersion}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                        Button(
+                                            onClick = { symmetricKeyToDelete = associatedSymKey },
+                                            enabled = !isOperating,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Elimina chiave simmetrica", color = MaterialTheme.colorScheme.error)
+                                        }
+                                    } else {
+                                        Text(
+                                            text = "Nessuna chiave simmetrica configurata per questo contatto.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                    }
+                                }
+                            }
+
+                            // SEZIONE D: MODALITÀ DI COMUNICAZIONE
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "D. Modalità di Comunicazione",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(
+                                        text = "Stato della modalità di comunicazione disponibile basato sulle chiavi attualmente memorizzate.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    val modeLabel = when {
+                                        associatedPubKey != null && associatedSymKey != null -> "Ibrida (Asimmetrica PGP + Simmetrica AES-256)"
+                                        associatedPubKey != null -> "Asimmetrica (OpenPGP)"
+                                        associatedSymKey != null -> "Simmetrica (AES-256)"
+                                        else -> "Non configurata (Richiede chiave pubblica o simmetrica)"
+                                    }
+
+                                    Text(
+                                        text = "• Modalità attiva: $modeLabel",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // SCHERMATE PRINCIPALI CON TAB (LE MIE CHIAVI | CONTATTI)
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        // Header informazioni e salvataggio dell'archivio
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
                             ),
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Gestione Contatti (${contactRecords.size})",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.secondary,
+                                        text = "Record totali: ${payload.records.size} | Payload: v${payload.version}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
                                     )
-                                    Button(
-                                        onClick = {
-                                            contactAliasInput = ""
-                                            addContactError = ""
-                                            showAddContactDialog = true
-                                        },
-                                        enabled = !isOperating,
-                                    ) {
-                                        Text("Aggiungi contatto")
+                                    if (hasUnsavedChanges) {
+                                        Text(
+                                            text = "⚠️ Modifiche pendenti non salvate su scheda SD",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "✓ Sincronizzato con scheda SD",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Medium,
+                                        )
                                     }
                                 }
 
-                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(
+                                    onClick = {
+                                        if (hasUnsavedChanges) {
+                                            showCloseConfirmationDialog = true
+                                        } else {
+                                            loadedPayload = null
+                                            selectedContactDetail = null
+                                            archiveStatusMessage = "Archivio chiuso."
+                                        }
+                                    },
+                                    enabled = !isOperating,
+                                ) {
+                                    Text("Chiudi archivio")
+                                }
+                            }
+                        }
 
-                                if (contactRecords.isEmpty()) {
-                                    Text(
-                                        text = "Nessun contatto presente nell'archivio.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    )
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        contactRecords.forEach { contact ->
-                                            val associatedPubKey = payload.records.filterIsInstance<ArchiveRecord.ContactPublicKeyRecord>()
-                                                .firstOrNull { it.contactId == contact.contactId }
+                        // BARRA DELLE SCHEDE (TAB ROW)
+                        TabRow(
+                            selectedTabIndex = activeTab.ordinal,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Tab(
+                                selected = activeTab == HomeNavigationTab.MY_KEYS,
+                                onClick = { activeTab = HomeNavigationTab.MY_KEYS },
+                                text = { Text("🔑 Le Mie Chiavi (${personalKeyIds.size})") },
+                            )
+                            Tab(
+                                selected = activeTab == HomeNavigationTab.CONTACTS,
+                                onClick = { activeTab = HomeNavigationTab.CONTACTS },
+                                text = { Text("👥 Contatti (${contactRecords.size})") },
+                            )
+                        }
 
-                                            val associatedOwnerKeyRecord = payload.records.filterIsInstance<ArchiveRecord.ContactOwnerKeyRecord>()
-                                                .firstOrNull { it.contactId == contact.contactId }
+                        // PAGINA 1: LE MIE CHIAVI
+                        if (activeTab == HomeNavigationTab.MY_KEYS) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                genKeyNameInput = ""
+                                                genUserIdInput = ""
+                                                genSelectedCategory = "Personale"
+                                                genCustomCategoryInput = ""
+                                                genSelectedProfile = PgpProfile.RSA_3072
+                                                genPassphraseInput = ""
+                                                genPassphraseConfirmInput = ""
+                                                generateDialogError = ""
+                                                showGeneratePgpDialog = true
+                                            },
+                                            enabled = !isOperating,
+                                            modifier = Modifier.weight(1f),
+                                        ) {
+                                            Text("Genera coppia PGP", maxLines = 1, softWrap = false)
+                                        }
 
-                                            Surface(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                color = MaterialTheme.colorScheme.surface,
-                                                shape = MaterialTheme.shapes.small,
-                                                tonalElevation = 1.dp,
-                                            ) {
-                                                Column(modifier = Modifier.padding(8.dp)) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically,
+                                        Button(
+                                            onClick = {
+                                                openPgpDocumentLauncher.launch(
+                                                    arrayOf(
+                                                        "application/pgp-keys",
+                                                        "application/pgp-signature",
+                                                        "application/pgp-encrypted",
+                                                        "text/plain",
+                                                        "application/octet-stream",
+                                                        "*/*",
+                                                    ),
+                                                )
+                                            },
+                                            enabled = !isOperating,
+                                            modifier = Modifier.weight(1f),
+                                        ) {
+                                            Text("Importa file .asc", maxLines = 1, softWrap = false)
+                                        }
+                                    }
+
+                                    if (personalKeyIds.isEmpty()) {
+                                        Text(
+                                            text = "Nessuna chiave PGP personale trovata nell'archivio.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                    } else {
+                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            personalKeyIds.forEach { keyId ->
+                                                val privRec = payload.records.filterIsInstance<ArchiveRecord.PrivateKeyRecord>()
+                                                    .firstOrNull { it.keyId == keyId }
+                                                val pubRec = payload.records.filterIsInstance<ArchiveRecord.PublicKeyRecord>()
+                                                    .firstOrNull { it.keyId == keyId }
+                                                val nameRec = payload.records.filterIsInstance<ArchiveRecord.KeyNameRecord>()
+                                                    .firstOrNull { it.keyId == keyId }
+                                                val catRec = payload.records.filterIsInstance<ArchiveRecord.KeyCategoryRecord>()
+                                                    .firstOrNull { it.keyId == keyId }
+
+                                                val displayName = nameRec?.name ?: "Coppia PGP $keyId"
+                                                val displayCategory = catRec?.category ?: "Personale"
+                                                val statusLabel = when {
+                                                    privRec != null && pubRec != null -> "🔒 Privata + 🔑 Pubblica"
+                                                    privRec != null -> "🔒 Solo Privata"
+                                                    else -> "🔑 Solo Pubblica"
+                                                }
+
+                                                Surface(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    color = MaterialTheme.colorScheme.surface,
+                                                    shape = MaterialTheme.shapes.small,
+                                                    tonalElevation = 1.dp,
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(8.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp),
                                                     ) {
-                                                        Column(modifier = Modifier.weight(1f)) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                        ) {
                                                             Text(
-                                                                text = "👤 ${contact.alias}",
+                                                                text = displayName,
                                                                 style = MaterialTheme.typography.labelMedium,
                                                                 fontWeight = FontWeight.Bold,
                                                                 color = MaterialTheme.colorScheme.primary,
                                                             )
-                                                            Text(
-                                                                text = "Contact ID: ${contact.contactId}",
-                                                                style = MaterialTheme.typography.bodySmall,
-                                                            )
-
-                                                            if (associatedOwnerKeyRecord != null) {
-                                                                val ownerKeyName = payload.records.filterIsInstance<ArchiveRecord.KeyNameRecord>()
-                                                                    .firstOrNull { it.keyId == associatedOwnerKeyRecord.ownerKeyId }?.name
-                                                                val ownerCategory = payload.records.filterIsInstance<ArchiveRecord.KeyCategoryRecord>()
-                                                                    .firstOrNull { it.keyId == associatedOwnerKeyRecord.ownerKeyId }?.category ?: "Personale"
-
-                                                                val ownerLabel = if (ownerKeyName != null) {
-                                                                    "$ownerKeyName (${associatedOwnerKeyRecord.ownerKeyId})"
-                                                                } else {
-                                                                    associatedOwnerKeyRecord.ownerKeyId
-                                                                }
-
+                                                            Surface(
+                                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                                shape = MaterialTheme.shapes.extraSmall,
+                                                            ) {
                                                                 Text(
-                                                                    text = "🔒 Chiave Personale: $ownerLabel (🏷️ $ownerCategory)",
-                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    text = "🏷️ $displayCategory",
+                                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                                                                     fontWeight = FontWeight.Bold,
-                                                                    color = MaterialTheme.colorScheme.secondary,
-                                                                )
-                                                            } else {
-                                                                Text(
-                                                                    text = "🔒 Nessuna chiave personale associata",
-                                                                    style = MaterialTheme.typography.bodySmall,
-                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                                                 )
                                                             }
                                                         }
 
-                                                        Column(horizontalAlignment = Alignment.End) {
-                                                            TextButton(
-                                                                onClick = {
-                                                                    val availableKeyIds = payload.records.filter {
-                                                                        it is ArchiveRecord.PrivateKeyRecord || it is ArchiveRecord.PublicKeyRecord
-                                                                    }.map {
-                                                                        when (it) {
-                                                                            is ArchiveRecord.PrivateKeyRecord -> it.keyId
-                                                                            is ArchiveRecord.PublicKeyRecord -> it.keyId
-                                                                            else -> ""
-                                                                        }
-                                                                    }.filter { it.isNotEmpty() }.distinct()
+                                                        Text(
+                                                            text = "Key ID: $keyId",
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                        )
 
-                                                                    contactForOwnerKeyAssignment = contact
-                                                                    selectedOwnerKeyIdOption = associatedOwnerKeyRecord?.ownerKeyId ?: availableKeyIds.firstOrNull()
-                                                                },
-                                                                enabled = !isOperating,
+                                                        Text(
+                                                            text = "Stato componenti: $statusLabel",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        )
+
+                                                        if (privRec != null) {
+                                                            Text(
+                                                                text = "・ Dati Privati: ${privRec.keyData.size} byte",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            )
+                                                        }
+
+                                                        if (pubRec != null) {
+                                                            Text(
+                                                                text = "・ Dati Pubblici: ${pubRec.keyData.size} byte",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            )
+                                                        }
+
+                                                        Column(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
+                                                                verticalAlignment = Alignment.CenterVertically,
                                                             ) {
-                                                                Text(
-                                                                    if (associatedOwnerKeyRecord == null) "Associa chiave personale" else "Cambia chiave personale",
-                                                                    maxLines = 1,
-                                                                    softWrap = false,
-                                                                )
-                                                            }
-
-                                                            if (associatedPubKey == null) {
-                                                                Button(
+                                                                TextButton(
                                                                     onClick = {
-                                                                        contactForPublicKeyImport = contact
-                                                                        openContactPgpDocumentLauncher.launch(
-                                                                            arrayOf(
-                                                                                "application/pgp-keys",
-                                                                                "application/pgp-signature",
-                                                                                "application/pgp-encrypted",
-                                                                                "text/plain",
-                                                                                "application/octet-stream",
-                                                                                "*/*",
-                                                                            ),
-                                                                        )
+                                                                        keyNameInput = nameRec?.name ?: ""
+                                                                        keyNameDialogError = ""
+                                                                        keyForNamePicker = keyId
                                                                     },
                                                                     enabled = !isOperating,
                                                                 ) {
-                                                                    Text("Importa chiave pubblica")
+                                                                    Text("Nome", maxLines = 1, softWrap = false)
+                                                                }
+
+                                                                TextButton(
+                                                                    onClick = {
+                                                                        selectedCategoryOption = if (PREDEFINED_CATEGORIES.contains(displayCategory)) displayCategory else "Altro"
+                                                                        customCategoryInput = if (!PREDEFINED_CATEGORIES.contains(displayCategory)) displayCategory else ""
+                                                                        categoryDialogError = ""
+                                                                        keyForCategoryPicker = keyId
+                                                                    },
+                                                                    enabled = !isOperating,
+                                                                ) {
+                                                                    Text("Categoria", maxLines = 1, softWrap = false)
                                                                 }
                                                             }
-                                                        }
-                                                    }
 
-                                                    if (associatedPubKey != null) {
-                                                        Spacer(modifier = Modifier.height(6.dp))
-                                                        val parsedInfo = PgpKeyParser.parseKeyData(associatedPubKey.keyData)
-                                                        val fpHex = if (parsedInfo is ParsedPgpKeyResult.PublicKeyResult) parsedInfo.fingerprintHex else "N/A"
-                                                        Surface(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                                            shape = MaterialTheme.shapes.extraSmall,
-                                                        ) {
-                                                            Column(modifier = Modifier.padding(6.dp)) {
-                                                                Text(
-                                                                    text = "🔑 Chiave Pubblica PGP Associata",
-                                                                    style = MaterialTheme.typography.labelSmall,
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    color = MaterialTheme.colorScheme.secondary,
-                                                                )
-                                                                Text(
-                                                                    text = "Key ID: ${associatedPubKey.keyId}",
-                                                                    style = MaterialTheme.typography.bodySmall,
-                                                                    fontWeight = FontWeight.Medium,
-                                                                )
-                                                                Text(
-                                                                    text = "Fingerprint: $fpHex",
-                                                                    style = MaterialTheme.typography.bodySmall,
-                                                                )
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                            ) {
+                                                                if (pubRec != null) {
+                                                                    TextButton(
+                                                                        onClick = {
+                                                                            pendingExportRecord = pubRec
+                                                                            val rawName = nameRec?.name ?: "coppia-${keyId}"
+                                                                            val sanitized = rawName.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
+                                                                            exportPgpDocumentLauncher.launch("$sanitized-public.asc")
+                                                                        },
+                                                                        enabled = !isOperating,
+                                                                    ) {
+                                                                        Text("Esporta pubblica (.asc)", maxLines = 1, softWrap = false)
+                                                                    }
+                                                                }
+
+                                                                if (privRec != null) {
+                                                                    TextButton(
+                                                                        onClick = {
+                                                                            pendingExportRecord = privRec
+                                                                            val rawName = nameRec?.name ?: "coppia-${keyId}"
+                                                                            val sanitized = rawName.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
+                                                                            exportPgpDocumentLauncher.launch("$sanitized-private.asc")
+                                                                        },
+                                                                        enabled = !isOperating,
+                                                                    ) {
+                                                                        Text("Esporta privata (.asc)", maxLines = 1, softWrap = false)
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.End,
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                            ) {
+                                                                TextButton(
+                                                                    onClick = { personalKeyToDeleteId = keyId },
+                                                                    enabled = !isOperating,
+                                                                ) {
+                                                                    Text(
+                                                                        "Elimina",
+                                                                        color = MaterialTheme.colorScheme.error,
+                                                                        fontWeight = FontWeight.Bold,
+                                                                        maxLines = 1,
+                                                                        softWrap = false,
+                                                                    )
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -2073,289 +2513,129 @@ fun HomeScreen() {
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Sezione Raggruppata: Identità Personali PGP
-                        val personalKeyIds = payload.records.filter {
-                            it is ArchiveRecord.PrivateKeyRecord || it is ArchiveRecord.PublicKeyRecord
-                        }.map {
-                            when (it) {
-                                is ArchiveRecord.PrivateKeyRecord -> it.keyId
-                                is ArchiveRecord.PublicKeyRecord -> it.keyId
-                                else -> ""
-                            }
-                        }.filter { it.isNotEmpty() }.distinct()
-
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            ),
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        text = "Identità Personali PGP (${personalKeyIds.size})",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                    TextButton(
-                                        onClick = {
-                                            if (hasUnsavedChanges) {
-                                                showCloseConfirmationDialog = true
-                                            } else {
-                                                loadedPayload = null
-                                                archiveStatusMessage = "Archivio chiuso."
-                                            }
-                                        },
-                                        enabled = !isOperating,
+                        // PAGINA 2: CONTATTI (ELENCO COMPATTO)
+                        if (activeTab == HomeNavigationTab.CONTACTS) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                                ),
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text("Chiudi archivio")
-                                    }
-                                }
-
-                                Text(
-                                    text = "Record totali: ${payload.records.size} | Versione payload: v${payload.version}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium,
-                                )
-
-                                if (hasUnsavedChanges) {
-                                    Text(
-                                        text = "⚠️ Modifiche pendenti non salvate su scheda SD",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
-                                        fontWeight = FontWeight.Bold,
-                                    )
-                                } else {
-                                    Text(
-                                        text = "✓ Sincronizzato con l'archivio su scheda SD",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            genKeyNameInput = ""
-                                            genUserIdInput = ""
-                                            genSelectedCategory = "Personale"
-                                            genCustomCategoryInput = ""
-                                            genSelectedProfile = PgpProfile.RSA_3072
-                                            genPassphraseInput = ""
-                                            genPassphraseConfirmInput = ""
-                                            generateDialogError = ""
-                                            showGeneratePgpDialog = true
-                                        },
-                                        enabled = !isOperating,
-                                        modifier = Modifier.weight(1f),
-                                    ) {
-                                        Text("Genera coppia PGP", maxLines = 1, softWrap = false)
+                                        Text(
+                                            text = "Elenco Contatti (${contactRecords.size})",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                        )
+                                        Button(
+                                            onClick = {
+                                                contactAliasInput = ""
+                                                addContactError = ""
+                                                showAddContactDialog = true
+                                            },
+                                            enabled = !isOperating,
+                                        ) {
+                                            Text("Aggiungi contatto")
+                                        }
                                     }
 
-                                    Button(
-                                        onClick = {
-                                            openPgpDocumentLauncher.launch(
-                                                arrayOf(
-                                                    "application/pgp-keys",
-                                                    "application/pgp-signature",
-                                                    "application/pgp-encrypted",
-                                                    "text/plain",
-                                                    "application/octet-stream",
-                                                    "*/*",
-                                                ),
-                                            )
-                                        },
-                                        enabled = !isOperating,
-                                        modifier = Modifier.weight(1f),
-                                    ) {
-                                        Text("Importa file .asc", maxLines = 1, softWrap = false)
-                                    }
-                                }
+                                    Spacer(modifier = Modifier.height(8.dp))
 
-                                Spacer(modifier = Modifier.height(8.dp))
+                                    if (contactRecords.isEmpty()) {
+                                        Text(
+                                            text = "Nessun contatto presente nell'archivio.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                    } else {
+                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            contactRecords.forEach { contact ->
+                                                val associatedPubKey = payload.records.filterIsInstance<ArchiveRecord.ContactPublicKeyRecord>()
+                                                    .firstOrNull { it.contactId == contact.contactId }
 
-                                if (personalKeyIds.isEmpty()) {
-                                    Text(
-                                        text = "Nessuna chiave PGP personale trovata nell'archivio.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    )
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        personalKeyIds.forEach { keyId ->
-                                            val privRec = payload.records.filterIsInstance<ArchiveRecord.PrivateKeyRecord>()
-                                                .firstOrNull { it.keyId == keyId }
-                                            val pubRec = payload.records.filterIsInstance<ArchiveRecord.PublicKeyRecord>()
-                                                .firstOrNull { it.keyId == keyId }
-                                            val nameRec = payload.records.filterIsInstance<ArchiveRecord.KeyNameRecord>()
-                                                .firstOrNull { it.keyId == keyId }
-                                            val catRec = payload.records.filterIsInstance<ArchiveRecord.KeyCategoryRecord>()
-                                                .firstOrNull { it.keyId == keyId }
+                                                val associatedOwnerKeyRecord = payload.records.filterIsInstance<ArchiveRecord.ContactOwnerKeyRecord>()
+                                                    .firstOrNull { it.contactId == contact.contactId }
 
-                                            val displayName = nameRec?.name ?: "Coppia PGP $keyId"
-                                            val displayCategory = catRec?.category ?: "Personale"
-                                            val statusLabel = when {
-                                                privRec != null && pubRec != null -> "🔒 Privata + 🔑 Pubblica"
-                                                privRec != null -> "🔒 Solo Privata"
-                                                else -> "🔑 Solo Pubblica"
-                                            }
+                                                val associatedSymKey = payload.records.filterIsInstance<ArchiveRecord.ContactSymmetricKeyRecord>()
+                                                    .firstOrNull { it.contactId == contact.contactId }
 
-                                            Surface(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                color = MaterialTheme.colorScheme.surface,
-                                                shape = MaterialTheme.shapes.small,
-                                                tonalElevation = 1.dp,
-                                            ) {
-                                                Column(
+                                                Surface(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(8.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                        .clickable { selectedContactDetail = contact },
+                                                    color = MaterialTheme.colorScheme.surface,
+                                                    shape = MaterialTheme.shapes.small,
+                                                    tonalElevation = 1.dp,
                                                 ) {
                                                     Row(
-                                                        modifier = Modifier.fillMaxWidth(),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(10.dp),
                                                         horizontalArrangement = Arrangement.SpaceBetween,
                                                         verticalAlignment = Alignment.CenterVertically,
                                                     ) {
-                                                        Text(
-                                                            text = displayName,
-                                                            style = MaterialTheme.typography.labelMedium,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = MaterialTheme.colorScheme.primary,
-                                                        )
-                                                        Surface(
-                                                            color = MaterialTheme.colorScheme.secondaryContainer,
-                                                            shape = MaterialTheme.shapes.extraSmall,
-                                                        ) {
+                                                        Column(modifier = Modifier.weight(1f)) {
                                                             Text(
-                                                                text = "🏷️ $displayCategory",
-                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                                text = "👤 ${contact.alias}",
+                                                                style = MaterialTheme.typography.labelLarge,
                                                                 fontWeight = FontWeight.Bold,
+                                                                color = MaterialTheme.colorScheme.primary,
                                                             )
-                                                        }
-                                                    }
-
-                                                    Text(
-                                                        text = "Key ID: $keyId",
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                    )
-
-                                                    Text(
-                                                        text = "Stato componenti: $statusLabel",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    )
-
-                                                    if (privRec != null) {
-                                                        Text(
-                                                            text = "・ Dati Privati: ${privRec.keyData.size} byte",
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        )
-                                                    }
-
-                                                    if (pubRec != null) {
-                                                        Text(
-                                                            text = "・ Dati Pubblici: ${pubRec.keyData.size} byte",
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        )
-                                                    }
-
-                                                    Column(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                    ) {
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
-                                                            verticalAlignment = Alignment.CenterVertically,
-                                                        ) {
-                                                            TextButton(
-                                                                onClick = {
-                                                                    keyNameInput = nameRec?.name ?: ""
-                                                                    keyNameDialogError = ""
-                                                                    keyForNamePicker = keyId
-                                                                },
-                                                                enabled = !isOperating,
+                                                            Text(
+                                                                text = "ID: ${contact.contactId}",
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            )
+                                                            Row(
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                modifier = Modifier.padding(top = 4.dp),
                                                             ) {
-                                                                Text("Nome", maxLines = 1, softWrap = false)
-                                                            }
-
-                                                            TextButton(
-                                                                onClick = {
-                                                                    selectedCategoryOption = if (PREDEFINED_CATEGORIES.contains(displayCategory)) displayCategory else "Altro"
-                                                                    customCategoryInput = if (!PREDEFINED_CATEGORIES.contains(displayCategory)) displayCategory else ""
-                                                                    categoryDialogError = ""
-                                                                    keyForCategoryPicker = keyId
-                                                                },
-                                                                enabled = !isOperating,
-                                                            ) {
-                                                                Text("Categoria", maxLines = 1, softWrap = false)
-                                                            }
-
-                                                            if (pubRec != null) {
-                                                                TextButton(
-                                                                    onClick = {
-                                                                        pendingExportRecord = pubRec
-                                                                        val rawName = nameRec?.name ?: "coppia-${keyId}"
-                                                                        val sanitized = rawName.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
-                                                                        exportPgpDocumentLauncher.launch("$sanitized-public.asc")
-                                                                    },
-                                                                    enabled = !isOperating,
+                                                                Surface(
+                                                                    color = if (associatedOwnerKeyRecord != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                                    shape = MaterialTheme.shapes.extraSmall,
                                                                 ) {
-                                                                    Text("Esporta pub (.asc)", maxLines = 1, softWrap = false)
+                                                                    Text(
+                                                                        text = if (associatedOwnerKeyRecord != null) "🔒 Chiave Personale" else "🔒 No Chiave Personale",
+                                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                    )
                                                                 }
-                                                            }
 
-                                                            if (privRec != null) {
-                                                                TextButton(
-                                                                    onClick = {
-                                                                        pendingExportRecord = privRec
-                                                                        val rawName = nameRec?.name ?: "coppia-${keyId}"
-                                                                        val sanitized = rawName.lowercase().replace(Regex("[^a-z0-9_-]"), "_")
-                                                                        exportPgpDocumentLauncher.launch("$sanitized-private.asc")
-                                                                    },
-                                                                    enabled = !isOperating,
+                                                                Surface(
+                                                                    color = if (associatedPubKey != null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                                    shape = MaterialTheme.shapes.extraSmall,
                                                                 ) {
-                                                                    Text("Esporta priv (.asc)", maxLines = 1, softWrap = false)
+                                                                    Text(
+                                                                        text = if (associatedPubKey != null) "🔑 Pubblica OK" else "🔑 No Pubblica",
+                                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                    )
+                                                                }
+
+                                                                Surface(
+                                                                    color = if (associatedSymKey != null) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                                    shape = MaterialTheme.shapes.extraSmall,
+                                                                ) {
+                                                                    Text(
+                                                                        text = if (associatedSymKey != null) "⚡ Simmetrica" else "⚡ No Simmetrica",
+                                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                    )
                                                                 }
                                                             }
                                                         }
 
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.End,
-                                                            verticalAlignment = Alignment.CenterVertically,
+                                                        TextButton(
+                                                            onClick = { selectedContactDetail = contact },
+                                                            enabled = !isOperating,
                                                         ) {
-                                                            TextButton(
-                                                                onClick = { personalKeyToDeleteId = keyId },
-                                                                enabled = !isOperating,
-                                                            ) {
-                                                                Text(
-                                                                    "Elimina",
-                                                                    color = MaterialTheme.colorScheme.error,
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    maxLines = 1,
-                                                                    softWrap = false,
-                                                                )
-                                                            }
+                                                            Text("Dettaglio →")
                                                         }
                                                     }
                                                 }
@@ -2363,26 +2643,35 @@ fun HomeScreen() {
                                         }
                                     }
                                 }
+                            }
+                        }
 
-                                // Altri record non personali (es. metadati generali, chiavi simmetriche)
-                                val otherRecords = payload.records.filterNot {
-                                    it is ArchiveRecord.PrivateKeyRecord ||
-                                        it is ArchiveRecord.PublicKeyRecord ||
-                                        it is ArchiveRecord.KeyCategoryRecord ||
-                                        it is ArchiveRecord.KeyNameRecord ||
-                                        it is ArchiveRecord.ContactRecord ||
-                                        it is ArchiveRecord.ContactPublicKeyRecord ||
-                                        it is ArchiveRecord.ContactOwnerKeyRecord
-                                }
+                        // RECORD METADATI GENERALI
+                        val otherRecords = payload.records.filterNot {
+                            it is ArchiveRecord.PrivateKeyRecord ||
+                                it is ArchiveRecord.PublicKeyRecord ||
+                                it is ArchiveRecord.KeyCategoryRecord ||
+                                it is ArchiveRecord.KeyNameRecord ||
+                                it is ArchiveRecord.ContactRecord ||
+                                it is ArchiveRecord.ContactPublicKeyRecord ||
+                                it is ArchiveRecord.ContactOwnerKeyRecord
+                        }
 
-                                if (otherRecords.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(12.dp))
+                        if (otherRecords.isNotEmpty()) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                ),
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
                                     Text(
                                         text = "Altri Record nell'Archivio (${otherRecords.size})",
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.secondary,
                                     )
+                                    Spacer(modifier = Modifier.height(6.dp))
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         otherRecords.forEach { record ->
                                             val realIndex = payload.records.indexOf(record)
