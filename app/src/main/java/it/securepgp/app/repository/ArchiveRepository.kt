@@ -8,12 +8,14 @@ import it.securepgp.app.storage.ArchiveRecord
 import it.securepgp.app.storage.LoadResult
 import it.securepgp.app.storage.SaveResult
 import it.securepgp.app.storage.SdArchiveStorage
+import java.util.UUID
 
 sealed class RepositoryLoadResult {
     data class Success(
         val generationIndex: Int,
         val documentUri: Uri,
         val payload: ArchivePayload,
+        val wasModified: Boolean = false,
     ) : RepositoryLoadResult()
 
     data object NoArchiveFound : RepositoryLoadResult()
@@ -54,7 +56,8 @@ class ArchiveRepository(
         initialRecords: List<ArchiveRecord> = emptyList(),
         iterations: Int = ArchiveCrypto.STANDARD_KDF_ITERATIONS,
     ): RepositorySaveResult {
-        val payload = ArchivePayload(records = initialRecords)
+        val (normalizedRecords, _) = normalizeUserIdentity(initialRecords)
+        val payload = ArchivePayload(records = normalizedRecords)
         val payloadBytes = payload.serialize()
 
         return try {
@@ -75,11 +78,14 @@ class ArchiveRepository(
         return when (val loadRes = loadArchiveFn(context, treeUri, passphrase)) {
             is LoadResult.Success -> {
                 try {
-                    val payload = ArchivePayload.deserialize(loadRes.payloadBytes)
+                    val rawPayload = ArchivePayload.deserialize(loadRes.payloadBytes)
+                    val (normalizedRecords, wasModified) = normalizeUserIdentity(rawPayload.records)
+                    val finalPayload = if (wasModified) ArchivePayload(rawPayload.version, normalizedRecords) else rawPayload
                     RepositoryLoadResult.Success(
                         generationIndex = loadRes.generationIndex,
                         documentUri = loadRes.documentUri,
-                        payload = payload,
+                        payload = finalPayload,
+                        wasModified = wasModified,
                     )
                 } catch (e: Exception) {
                     RepositoryLoadResult.CorruptedArchive(
@@ -109,7 +115,9 @@ class ArchiveRepository(
         passphrase: CharArray,
         iterations: Int = ArchiveCrypto.STANDARD_KDF_ITERATIONS,
     ): RepositorySaveResult {
-        val payloadBytes = payload.serialize()
+        val (normalizedRecords, _) = normalizeUserIdentity(payload.records)
+        val payloadToSave = ArchivePayload(payload.version, normalizedRecords)
+        val payloadBytes = payloadToSave.serialize()
         return try {
             val saveRes = saveArchiveFn(context, treeUri, payloadBytes, passphrase, iterations)
             mapSaveResult(saveRes)
@@ -135,6 +143,47 @@ class ArchiveRepository(
             is SaveResult.AuthenticationFailed -> RepositorySaveResult.Error(saveRes.message)
             is SaveResult.CorruptedData -> RepositorySaveResult.Error(saveRes.message)
             is SaveResult.SafError -> RepositorySaveResult.Error(saveRes.message, saveRes.cause)
+        }
+    }
+
+    companion object {
+        private val USER_IDENTITY_REGEX = Regex("""^usr_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$""")
+
+        fun generateUserIdentityId(): String {
+            return "usr_" + UUID.randomUUID().toString()
+        }
+
+        fun isUserIdentityIdValid(id: String): Boolean {
+            return USER_IDENTITY_REGEX.matches(id)
+        }
+
+        fun normalizeUserIdentity(records: List<ArchiveRecord>): Pair<List<ArchiveRecord>, Boolean> {
+            val identityRecords = records.filterIsInstance<ArchiveRecord.UserIdentityRecord>()
+            return when {
+                identityRecords.isEmpty() -> {
+                    val newRecord = ArchiveRecord.UserIdentityRecord(generateUserIdentityId())
+                    Pair(records + newRecord, true)
+                }
+                identityRecords.size == 1 -> {
+                    Pair(records, false)
+                }
+                else -> {
+                    var keptFirst = false
+                    val cleanedRecords = records.filterNot { record ->
+                        if (record is ArchiveRecord.UserIdentityRecord) {
+                            if (!keptFirst) {
+                                keptFirst = true
+                                false
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    Pair(cleanedRecords, true)
+                }
+            }
         }
     }
 }

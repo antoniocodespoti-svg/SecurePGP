@@ -42,7 +42,7 @@ class ArchiveRepositoryTest {
 
         val success = result as RepositoryLoadResult.Success
         assertEquals(1, success.generationIndex)
-        assertEquals(1, success.payload.records.size)
+        assertEquals(2, success.payload.records.size) // Record + auto-generated UserIdentityRecord
         assertEquals(record, success.payload.records[0])
     }
 
@@ -111,6 +111,110 @@ class ArchiveRepositoryTest {
         val notPromoted = result as RepositorySaveResult.VerifiedNotPromoted
         assertEquals(2, notPromoted.generationIndex)
         assertEquals("SAF rename not supported", notPromoted.reason)
+    }
+
+    @Test
+    fun testCreateNewArchive_generatesUserIdentityRecordWithUsrUuidFormat() {
+        var savedPayloadBytes: ByteArray? = null
+        val repository = ArchiveRepository(
+            saveArchiveFn = { _, _, bytes, _, _ ->
+                savedPayloadBytes = bytes.clone()
+                SaveResult.Success(1, dummyUri, promoted = true)
+            },
+        )
+        val mockContext = DummyContext()
+
+        val result = repository.createNewArchive(mockContext, dummyUri, dummyPassphrase)
+        assertTrue(result is RepositorySaveResult.Success)
+
+        assertNotNull(savedPayloadBytes)
+        val deserialized = ArchivePayload.deserialize(savedPayloadBytes!!)
+        val userIdRecord = deserialized.records.filterIsInstance<ArchiveRecord.UserIdentityRecord>().firstOrNull()
+
+        assertNotNull(userIdRecord)
+        assertTrue(ArchiveRepository.isUserIdentityIdValid(userIdRecord!!.userIdentityId))
+    }
+
+    @Test
+    fun testCreateNewArchive_preservesExistingUserIdentityRecord() {
+        val existingUserIdentity = ArchiveRecord.UserIdentityRecord("usr_12345678-1234-4234-8234-123456789abc")
+        var savedPayloadBytes: ByteArray? = null
+
+        val repository = ArchiveRepository(
+            saveArchiveFn = { _, _, bytes, _, _ ->
+                savedPayloadBytes = bytes.clone()
+                SaveResult.Success(1, dummyUri, promoted = true)
+            },
+        )
+        val mockContext = DummyContext()
+
+        val result = repository.createNewArchive(
+            mockContext, dummyUri, dummyPassphrase,
+            initialRecords = listOf(existingUserIdentity),
+        )
+        assertTrue(result is RepositorySaveResult.Success)
+
+        val deserialized = ArchivePayload.deserialize(savedPayloadBytes!!)
+        val identityRecords = deserialized.records.filterIsInstance<ArchiveRecord.UserIdentityRecord>()
+
+        assertEquals(1, identityRecords.size)
+        assertEquals("usr_12345678-1234-4234-8234-123456789abc", identityRecords[0].userIdentityId)
+    }
+
+    @Test
+    fun testOpenArchive_legacyPayloadGeneratesUserIdentityAndSetsWasModified() {
+        val legacyRecord = ArchiveRecord.MetadataRecord("app", "legacy_v1")
+        val legacyPayloadBytes = ArchivePayload(records = listOf(legacyRecord)).serialize()
+
+        val repository = ArchiveRepository(
+            loadArchiveFn = { _, _, _ -> LoadResult.Success(1, dummyUri, legacyPayloadBytes) },
+        )
+        val mockContext = DummyContext()
+
+        val result = repository.openArchive(mockContext, dummyUri, dummyPassphrase)
+        assertTrue(result is RepositoryLoadResult.Success)
+
+        val success = result as RepositoryLoadResult.Success
+        assertTrue(success.wasModified)
+
+        val userIdRecord = success.payload.records.filterIsInstance<ArchiveRecord.UserIdentityRecord>().firstOrNull()
+        assertNotNull(userIdRecord)
+        assertTrue(ArchiveRepository.isUserIdentityIdValid(userIdRecord!!.userIdentityId))
+    }
+
+    @Test
+    fun testOpenArchive_existingUserIdentityPreservedAndWasModifiedIsFalse() {
+        val userIdRecord = ArchiveRecord.UserIdentityRecord("usr_11112222-3333-4444-8888-99990000aaaa")
+        val payloadBytes = ArchivePayload(records = listOf(userIdRecord)).serialize()
+
+        val repository = ArchiveRepository(
+            loadArchiveFn = { _, _, _ -> LoadResult.Success(1, dummyUri, payloadBytes) },
+        )
+        val mockContext = DummyContext()
+
+        val result = repository.openArchive(mockContext, dummyUri, dummyPassphrase)
+        assertTrue(result is RepositoryLoadResult.Success)
+
+        val success = result as RepositoryLoadResult.Success
+        assertFalse(success.wasModified)
+
+        val foundRecord = success.payload.records.filterIsInstance<ArchiveRecord.UserIdentityRecord>().firstOrNull()
+        assertEquals(userIdRecord, foundRecord)
+    }
+
+    @Test
+    fun testNormalizeUserIdentity_removesDuplicateUserIdentitiesKeepingFirst() {
+        val user1 = ArchiveRecord.UserIdentityRecord("usr_11111111-1111-4111-8111-111111111111")
+        val user2 = ArchiveRecord.UserIdentityRecord("usr_22222222-2222-4222-8222-222222222222")
+        val meta = ArchiveRecord.MetadataRecord("k", "v")
+
+        val records = listOf(meta, user1, user2)
+        val (normalized, wasModified) = ArchiveRepository.normalizeUserIdentity(records)
+
+        assertTrue(wasModified)
+        val identityRecords = normalized.filterIsInstance<ArchiveRecord.UserIdentityRecord>()
+        assertEquals(1, identityRecords.size)
+        assertEquals("usr_11111111-1111-4111-8111-111111111111", identityRecords[0].userIdentityId)
     }
 }
 

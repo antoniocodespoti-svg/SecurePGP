@@ -1404,12 +1404,13 @@ fun HomeScreen() {
                                             pendingDialogAction = null
                                             archiveStatusMessage = when (loadRes) {
                                                 is RepositoryLoadResult.Success -> {
-                                                    val (adjustedPayload, modified) = processPendingKeyDeletions(loadRes.payload, targetUri)
+                                                    val (adjustedPayload, pendingDeleteModified) = processPendingKeyDeletions(loadRes.payload, targetUri)
+                                                    val isModified = loadRes.wasModified || pendingDeleteModified
                                                     loadedPayload = adjustedPayload
                                                     selectedContactDetail = null
-                                                    if (modified) {
+                                                    if (isModified) {
                                                         hasUnsavedChanges = true
-                                                        "Archivio aperto: applicata la rimozione pendente della chiave simmetrica. Salva l'archivio per completare la pulizia SAF."
+                                                        "Archivio aperto: inizializzata identità proprietario o applicata rimozione pendente. Salva l'archivio per rendere permanenti le modifiche."
                                                     } else {
                                                         hasUnsavedChanges = false
                                                         "Archivio aperto con successo!\n" +

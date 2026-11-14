@@ -205,9 +205,10 @@ class ArchiveIntegrationTest {
 
         val successLoad = loadResult as RepositoryLoadResult.Success
         assertEquals(1, successLoad.generationIndex)
-        assertEquals(2, successLoad.payload.records.size)
+        assertEquals(3, successLoad.payload.records.size) // 2 initial records + 1 auto-generated UserIdentityRecord
         assertEquals(records[0], successLoad.payload.records[0])
         assertEquals(records[1], successLoad.payload.records[1])
+        assertTrue(successLoad.payload.records[2] is ArchiveRecord.UserIdentityRecord)
 
         // 3. Open with wrong passphrase
         val wrongLoadResult = repository.openArchive(mockContext, dummyUri, wrongPassphrase)
